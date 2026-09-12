@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   StyleSheet,
   Text,
@@ -9,8 +9,10 @@ import {
   Modal,
   Linking,
   Dimensions,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { supabase } from './supabase';
 
 const { width } = Dimensions.get('window');
 
@@ -19,66 +21,104 @@ function MainScreen() {
   const [activeTab, setActiveTab] = useState('CORTO');
   const [selectedTrade, setSelectedTrade] = useState(null);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [followedTrades, setFollowedTrades] = useState(['1']);
+  const [followedTrades, setFollowedTrades] = useState([]);
+  const [positions, setPositions] = useState([]);
+  const [loading, setLoading] = useState(true);
 
-  const positions = [
-    {
-      id: '1',
-      tab: 'CORTO',
-      ticker: 'IREN',
-      date: '12/09 09:30',
-      entry: 43.0,
-      stop: 41.0,
-      target: 60.9,
-      current: 46.93,
-      badge: 'TP1 (1)',
-      badgeType: 'TP',
-      profits: [
-        { label: 'Profit 1', price: 46.5, pct: '+8.14%', hit: true },
-        { label: 'Profit 2', price: 51.0, pct: '+18.60%', hit: false },
-        { label: 'Profit 3', price: 55.8, pct: '+29.76%', hit: false },
-        { label: 'Profit 4', price: 60.9, pct: '+41.62%', hit: false },
-      ],
-      tvUrl: 'https://www.tradingview.com/chart/?symbol=NASDAQ:IREN',
-    },
-    {
-      id: '2',
-      tab: 'CRIPTO',
-      ticker: 'BTC/USDT',
-      date: '10/09 14:00',
-      entry: 78500,
-      stop: 77500,
-      target: 81116,
-      current: 77200,
-      badge: 'Z. Stop',
-      badgeType: 'STOP',
-      profits: [
-        { label: 'Profit 1', price: 79200, pct: '+0.89%', hit: false },
-        { label: 'Profit 2', price: 80100, pct: '+2.03%', hit: false },
-        { label: 'Profit 3', price: 81116, pct: '+3.33%', hit: false },
-      ],
-      tvUrl: 'https://www.tradingview.com/chart/?symbol=BINANCE:BTCUSDT',
-    },
-    {
-      id: '3',
-      tab: 'LARGO',
-      ticker: 'MELI',
-      date: '08/09 11:15',
-      entry: 1950.0,
-      stop: 1880.0,
-      target: 2350.0,
-      current: 2040.5,
-      badge: 'Des. (2)',
-      badgeType: 'DESARME',
-      profits: [
-        { label: 'Profit 1', price: 2040.0, pct: '+4.61%', hit: true },
-        { label: 'Profit 2', price: 2150.0, pct: '+10.25%', hit: false },
-        { label: 'Profit 3', price: 2280.0, pct: '+16.92%', hit: false },
-        { label: 'Profit 4', price: 2350.0, pct: '+20.51%', hit: false },
-      ],
-      tvUrl: 'https://www.tradingview.com/chart/?symbol=NASDAQ:MELI',
-    },
-  ];
+  useEffect(() => {
+    fetchTrades();
+
+    const channel = supabase
+      .channel('schema-db-changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'trades' },
+        () => {
+          fetchTrades();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  const calculateTradeStatus = (item) => {
+    const current = Number(item.current);
+    const entry = Number(item.entry);
+    const stop = Number(item.stop);
+    const baseProfits = Array.isArray(item.profits) ? item.profits : [];
+
+    // Tildar de forma dinámica si el precio actual igualó o superó el objetivo
+    const evaluatedProfits = baseProfits.map((p) => {
+      const targetPrice = Number(p.price);
+      const isHit = current >= targetPrice;
+      return {
+        ...p,
+        hit: isHit,
+      };
+    });
+
+    const hitCount = evaluatedProfits.filter((p) => p.hit).length;
+
+    let dynamicBadge = item.badge;
+    let dynamicBadgeType = item.badge_type;
+
+    if (current <= stop) {
+      dynamicBadge = 'Z. Stop';
+      dynamicBadgeType = 'STOP';
+    } else if (hitCount > 0) {
+      dynamicBadge = `TP${hitCount} (${hitCount})`;
+      dynamicBadgeType = 'TP';
+    } else if (current > entry) {
+      dynamicBadge = 'En Ganancia';
+      dynamicBadgeType = 'DESARME';
+    } else {
+      dynamicBadge = 'Activa';
+      dynamicBadgeType = 'DEFAULT';
+    }
+
+    return {
+      id: String(item.id),
+      tab: item.tab,
+      ticker: item.ticker,
+      date: item.date_label,
+      entry,
+      stop,
+      target: Number(item.target),
+      current,
+      badge: dynamicBadge,
+      badgeType: dynamicBadgeType,
+      profits: evaluatedProfits,
+      tvUrl: item.tv_url,
+    };
+  };
+
+  const fetchTrades = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('trades')
+        .select('*')
+        .order('id', { ascending: false });
+
+      if (error) {
+        console.error('Error al traer trades:', error);
+      } else if (data) {
+        const formatted = data.map(calculateTradeStatus);
+        setPositions(formatted);
+
+        setSelectedTrade((prev) => {
+          if (!prev) return null;
+          return formatted.find((t) => t.id === prev.id) || null;
+        });
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const sentimentFeed = [
     { id: '1', tag: '#VIX', title: 'Sentimiento #VIX', date: 'Hoy 09:18', note: 'Volatilidad en compresión. Atentos a quiebre de soporte.' },
@@ -119,7 +159,6 @@ function MainScreen() {
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <StatusBar barStyle="light-content" backgroundColor="#05080E" translucent={false} />
 
-      {/* Header con espacio seguro superior */}
       <View style={styles.header}>
         <TouchableOpacity style={styles.menuIconBtn} onPress={() => setIsMenuOpen(true)}>
           <Text style={styles.menuIconText}>☰</Text>
@@ -162,82 +201,89 @@ function MainScreen() {
             ))}
           </View>
 
-          <ScrollView contentContainerStyle={styles.listContainer}>
-            {displayedPositions.map((item) => {
-              const pnl = (((item.current - item.entry) / item.entry) * 100).toFixed(2);
-              const isPositive = item.current >= item.entry;
-              const isFollowed = followedTrades.includes(item.id);
-              const badgeStyle = getBadgeStyle(item.badgeType);
+          {loading ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#10B981" />
+              <Text style={styles.loadingText}>Sincronizando con Supabase...</Text>
+            </View>
+          ) : (
+            <ScrollView contentContainerStyle={styles.listContainer}>
+              {displayedPositions.map((item) => {
+                const pnl = (((item.current - item.entry) / item.entry) * 100).toFixed(2);
+                const isPositive = item.current >= item.entry;
+                const isFollowed = followedTrades.includes(item.id);
+                const badgeStyle = getBadgeStyle(item.badgeType);
 
-              return (
-                <TouchableOpacity
-                  key={item.id}
-                  style={styles.card}
-                  activeOpacity={0.7}
-                  onPress={() => setSelectedTrade(item)}
-                >
-                  <View style={styles.leftCol}>
-                    <View style={styles.tickerRow}>
-                      <Text style={styles.ticker}>{item.ticker}</Text>
-                      <TouchableOpacity
-                        onPress={() => toggleFollow(item.id)}
-                        hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-                        style={styles.followBtn}
-                      >
-                        <Text style={[styles.followStar, isFollowed && styles.followStarActive]}>
-                          {isFollowed ? '★' : '☆'}
+                return (
+                  <TouchableOpacity
+                    key={item.id}
+                    style={styles.card}
+                    activeOpacity={0.7}
+                    onPress={() => setSelectedTrade(item)}
+                  >
+                    <View style={styles.leftCol}>
+                      <View style={styles.tickerRow}>
+                        <Text style={styles.ticker}>{item.ticker}</Text>
+                        <TouchableOpacity
+                          onPress={() => toggleFollow(item.id)}
+                          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                          style={styles.followBtn}
+                        >
+                          <Text style={[styles.followStar, isFollowed && styles.followStarActive]}>
+                            {isFollowed ? '★' : '☆'}
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+
+                      <Text style={styles.date}>{item.date}</Text>
+
+                      <View style={styles.levelRow}>
+                        <Text style={styles.levelLabel}>Ingreso: </Text>
+                        <Text style={styles.levelVal}>${item.entry}</Text>
+                      </View>
+                      <View style={styles.levelRow}>
+                        <Text style={styles.levelLabel}>Stop: </Text>
+                        <Text style={styles.levelVal}>${item.stop}</Text>
+                      </View>
+                      <View style={styles.levelRow}>
+                        <Text style={styles.levelLabel}>Target: </Text>
+                        <Text style={[styles.levelVal, { color: '#10B981' }]}>${item.target}</Text>
+                      </View>
+                    </View>
+
+                    <View style={styles.midCol}>
+                      <Text style={styles.currentLabel}>PRECIO ACTUAL</Text>
+                      <Text style={styles.currentPrice}>${item.current}</Text>
+                      <View style={[styles.pnlBadge, { backgroundColor: isPositive ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.12)' }]}>
+                        <Text style={[styles.pnlText, { color: isPositive ? '#34D399' : '#EF4444' }]}>
+                          {isPositive ? `+${pnl}%` : `${pnl}%`}
                         </Text>
-                      </TouchableOpacity>
+                      </View>
                     </View>
 
-                    <Text style={styles.date}>{item.date}</Text>
+                    <View style={styles.rightCol}>
+                      <View style={[styles.badge, { backgroundColor: badgeStyle.bg, borderColor: badgeStyle.border }]}>
+                        <Text style={[styles.badgeText, { color: badgeStyle.text }]}>
+                          {item.badge}
+                        </Text>
+                      </View>
+                      <Text style={styles.detailHint}>Detalle ›</Text>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
 
-                    <View style={styles.levelRow}>
-                      <Text style={styles.levelLabel}>Ingreso: </Text>
-                      <Text style={styles.levelVal}>${item.entry}</Text>
-                    </View>
-                    <View style={styles.levelRow}>
-                      <Text style={styles.levelLabel}>Stop: </Text>
-                      <Text style={styles.levelVal}>${item.stop}</Text>
-                    </View>
-                    <View style={styles.levelRow}>
-                      <Text style={styles.levelLabel}>Target: </Text>
-                      <Text style={[styles.levelVal, { color: '#10B981' }]}>${item.target}</Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.midCol}>
-                    <Text style={styles.currentLabel}>PRECIO ACTUAL</Text>
-                    <Text style={styles.currentPrice}>${item.current}</Text>
-                    <View style={[styles.pnlBadge, { backgroundColor: isPositive ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.12)' }]}>
-                      <Text style={[styles.pnlText, { color: isPositive ? '#34D399' : '#EF4444' }]}>
-                        {isPositive ? `+${pnl}%` : `${pnl}%`}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.rightCol}>
-                    <View style={[styles.badge, { backgroundColor: badgeStyle.bg, borderColor: badgeStyle.border }]}>
-                      <Text style={[styles.badgeText, { color: badgeStyle.text }]}>
-                        {item.badge}
-                      </Text>
-                    </View>
-                    <Text style={styles.detailHint}>Detalle ›</Text>
-                  </View>
-                </TouchableOpacity>
-              );
-            })}
-
-            {displayedPositions.length === 0 && (
-              <View style={styles.emptyContainer}>
-                <Text style={styles.emptyText}>
-                  {currentScreen === 'MIS_POSICIONES'
-                    ? 'No estás siguiendo operaciones en esta categoría. Tocá la estrella en cualquier trade para sumarlo a tu cartera.'
-                    : 'Sin operaciones activas registradas.'}
-                </Text>
-              </View>
-            )}
-          </ScrollView>
+              {displayedPositions.length === 0 && (
+                <View style={styles.emptyContainer}>
+                  <Text style={styles.emptyText}>
+                    {currentScreen === 'MIS_POSICIONES'
+                      ? 'No estás siguiendo operaciones en esta categoría. Tocá la estrella en cualquier posición para sumarla a tu cartera.'
+                      : 'Sin operaciones activas en esta categoría.'}
+                  </Text>
+                </View>
+              )}
+            </ScrollView>
+          )}
         </>
       )}
 
@@ -284,7 +330,6 @@ function MainScreen() {
         </ScrollView>
       )}
 
-      {/* Modal Detalle Trade */}
       <Modal
         visible={selectedTrade !== null}
         transparent={true}
@@ -350,7 +395,6 @@ function MainScreen() {
         </View>
       </Modal>
 
-      {/* Drawer Lateral */}
       <Modal
         visible={isMenuOpen}
         transparent={true}
@@ -520,6 +564,17 @@ const styles = StyleSheet.create({
   tabTextActive: {
     color: '#34D399',
   },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 60,
+  },
+  loadingText: {
+    color: '#64748B',
+    fontSize: 13,
+    marginTop: 12,
+  },
   listContainer: {
     padding: 16,
     gap: 12,
@@ -539,7 +594,6 @@ const styles = StyleSheet.create({
   },
   tickerRow: {
     flexDirection: 'row',
-    alignItems: 'center',
   },
   ticker: {
     color: '#F8FAFC',
