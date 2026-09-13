@@ -7,9 +7,11 @@ import {
   ScrollView,
   StatusBar,
   Modal,
+  TextInput,
   Linking,
   Dimensions,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { supabase } from './supabase';
@@ -24,6 +26,18 @@ function MainScreen() {
   const [followedTrades, setFollowedTrades] = useState([]);
   const [positions, setPositions] = useState([]);
   const [loading, setLoading] = useState(true);
+
+  // Estados del Formulario de Alta
+  const [isNewTradeOpen, setIsNewTradeOpen] = useState(false);
+  const [formTab, setFormTab] = useState('CORTO');
+  const [ticker, setTicker] = useState('');
+  const [entryPrice, setEntryPrice] = useState('');
+  const [stopPrice, setStopPrice] = useState('');
+  const [tp1, setTp1] = useState('');
+  const [tp2, setTp2] = useState('');
+  const [tp3, setTp3] = useState('');
+  const [tvUrl, setTvUrl] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     fetchTrades();
@@ -50,7 +64,6 @@ function MainScreen() {
     const stop = Number(item.stop);
     const baseProfits = Array.isArray(item.profits) ? item.profits : [];
 
-    // Tildar de forma dinámica si el precio actual igualó o superó el objetivo
     const evaluatedProfits = baseProfits.map((p) => {
       const targetPrice = Number(p.price);
       const isHit = current >= targetPrice;
@@ -117,6 +130,95 @@ function MainScreen() {
       console.error(err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleCreateTrade = async () => {
+    if (!ticker.trim() || !entryPrice || !stopPrice || !tp1) {
+      Alert.alert('Datos requeridos', 'Completá Ticker, Entrada, Stop Loss y al menos el Target 1.');
+      return;
+    }
+
+    const e = parseFloat(entryPrice.replace(',', '.'));
+    const s = parseFloat(stopPrice.replace(',', '.'));
+    const t1 = parseFloat(tp1.replace(',', '.'));
+    const t2 = tp2 ? parseFloat(tp2.replace(',', '.')) : null;
+    const t3 = tp3 ? parseFloat(tp3.replace(',', '.')) : null;
+
+    if (isNaN(e) || isNaN(s) || isNaN(t1)) {
+      Alert.alert('Formato inválido', 'Los precios ingresados deben ser numéricos.');
+      return;
+    }
+
+    setIsSaving(true);
+
+    const profits = [
+      {
+        label: 'Profit 1',
+        price: t1,
+        pct: `+${(((t1 - e) / e) * 100).toFixed(2)}%`,
+        hit: false,
+      },
+    ];
+
+    let maxTarget = t1;
+
+    if (t2 && !isNaN(t2)) {
+      profits.push({
+        label: 'Profit 2',
+        price: t2,
+        pct: `+${(((t2 - e) / e) * 100).toFixed(2)}%`,
+        hit: false,
+      });
+      maxTarget = t2;
+    }
+
+    if (t3 && !isNaN(t3)) {
+      profits.push({
+        label: 'Profit 3',
+        price: t3,
+        pct: `+${(((t3 - e) / e) * 100).toFixed(2)}%`,
+        hit: false,
+      });
+      maxTarget = t3;
+    }
+
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const dateLabel = `${pad(now.getDate())}/${pad(now.getMonth() + 1)} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+
+    const newRecord = {
+      tab: formTab,
+      ticker: ticker.toUpperCase().trim(),
+      date_label: dateLabel,
+      entry: e,
+      stop: s,
+      target: maxTarget,
+      current: e,
+      badge: 'Activa',
+      badge_type: 'DEFAULT',
+      tv_url: tvUrl.trim() || `https://www.tradingview.com/chart/?symbol=${ticker.toUpperCase().trim()}`,
+      profits,
+    };
+
+    const { error } = await supabase.from('trades').insert([newRecord]);
+
+    setIsSaving(false);
+
+    if (error) {
+      console.log('Error Supabase insert:', error);
+      Alert.alert('Error al guardar', error.message || JSON.stringify(error));
+    } else {
+      Alert.alert('Éxito', '¡Posición publicada correctamente!');
+      setTicker('');
+      setEntryPrice('');
+      setStopPrice('');
+      setTp1('');
+      setTp2('');
+      setTp3('');
+      setTvUrl('');
+      setIsNewTradeOpen(false);
+      fetchTrades();
     }
   };
 
@@ -284,6 +386,15 @@ function MainScreen() {
               )}
             </ScrollView>
           )}
+
+          {/* Botón flotante para abrir el panel de carga rápida */}
+          <TouchableOpacity
+            style={styles.fabButton}
+            activeOpacity={0.85}
+            onPress={() => setIsNewTradeOpen(true)}
+          >
+            <Text style={styles.fabText}>+ NUEVA POSICIÓN</Text>
+          </TouchableOpacity>
         </>
       )}
 
@@ -330,6 +441,137 @@ function MainScreen() {
         </ScrollView>
       )}
 
+      {/* Modal Formulario Nueva Posición */}
+      <Modal
+        visible={isNewTradeOpen}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setIsNewTradeOpen(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { maxHeight: '90%' }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTicker}>Nueva Operación</Text>
+              <TouchableOpacity onPress={() => setIsNewTradeOpen(false)} style={styles.closeButton}>
+                <Text style={styles.closeButtonText}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false}>
+              <Text style={styles.inputLabel}>CATEGORÍA</Text>
+              <View style={styles.formCategoryRow}>
+                {['CORTO', 'LARGO', 'CRIPTO'].map((cat) => (
+                  <TouchableOpacity
+                    key={cat}
+                    style={[styles.categoryChoice, formTab === cat && styles.categoryChoiceActive]}
+                    onPress={() => setFormTab(cat)}
+                  >
+                    <Text style={[styles.categoryChoiceText, formTab === cat && styles.categoryChoiceTextActive]}>
+                      {cat}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={styles.inputLabel}>TICKER / ACTIVO (EJ: AAPL, GGAL, BTC)</Text>
+              <TextInput
+                style={styles.textInput}
+                placeholder="TICKER"
+                placeholderTextColor="#475569"
+                value={ticker}
+                onChangeText={setTicker}
+                autoCapitalize="characters"
+              />
+
+              <View style={styles.dualInputRow}>
+                <View style={{ flex: 1, marginRight: 8 }}>
+                  <Text style={styles.inputLabel}>PRECIO ENTRADA ($)</Text>
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="0.00"
+                    placeholderTextColor="#475569"
+                    keyboardType="numeric"
+                    value={entryPrice}
+                    onChangeText={setEntryPrice}
+                  />
+                </View>
+
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.inputLabel}>STOP LOSS ($)</Text>
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="0.00"
+                    placeholderTextColor="#475569"
+                    keyboardType="numeric"
+                    value={stopPrice}
+                    onChangeText={setStopPrice}
+                  />
+                </View>
+              </View>
+
+              <Text style={styles.inputLabel}>TARGET 1 ($) *OBLIGATORIO</Text>
+              <TextInput
+                style={styles.textInput}
+                placeholder="Precio Objetivo 1"
+                placeholderTextColor="#475569"
+                keyboardType="numeric"
+                value={tp1}
+                onChangeText={setTp1}
+              />
+
+              <View style={styles.dualInputRow}>
+                <View style={{ flex: 1, marginRight: 8 }}>
+                  <Text style={styles.inputLabel}>TARGET 2 ($)</Text>
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="Opcional"
+                    placeholderTextColor="#475569"
+                    keyboardType="numeric"
+                    value={tp2}
+                    onChangeText={setTp2}
+                  />
+                </View>
+
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.inputLabel}>TARGET 3 ($)</Text>
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="Opcional"
+                    placeholderTextColor="#475569"
+                    keyboardType="numeric"
+                    value={tp3}
+                    onChangeText={setTp3}
+                  />
+                </View>
+              </View>
+
+              <Text style={styles.inputLabel}>LINK TRADINGVIEW (OPCIONAL)</Text>
+              <TextInput
+                style={styles.textInput}
+                placeholder="https://www.tradingview.com/..."
+                placeholderTextColor="#475569"
+                value={tvUrl}
+                onChangeText={setTvUrl}
+                autoCapitalize="none"
+              />
+
+              <TouchableOpacity
+                style={[styles.saveTradeBtn, isSaving && { opacity: 0.6 }]}
+                onPress={handleCreateTrade}
+                disabled={isSaving}
+              >
+                {isSaving ? (
+                  <ActivityIndicator color="#05080E" />
+                ) : (
+                  <Text style={styles.saveTradeBtnText}>PUBLICAR POSICIÓN</Text>
+                )}
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal Detalle Trade */}
       <Modal
         visible={selectedTrade !== null}
         transparent={true}
@@ -395,6 +637,7 @@ function MainScreen() {
         </View>
       </Modal>
 
+      {/* Drawer Lateral */}
       <Modal
         visible={isMenuOpen}
         transparent={true}
@@ -577,6 +820,7 @@ const styles = StyleSheet.create({
   },
   listContainer: {
     padding: 16,
+    paddingBottom: 90,
     gap: 12,
   },
   card: {
@@ -684,9 +928,29 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 20,
   },
+  fabButton: {
+    position: 'absolute',
+    bottom: 24,
+    right: 20,
+    backgroundColor: '#10B981',
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderRadius: 30,
+    elevation: 8,
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 6,
+  },
+  fabText: {
+    color: '#05080E',
+    fontWeight: '900',
+    fontSize: 13,
+    letterSpacing: 0.8,
+  },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.8)',
+    backgroundColor: 'rgba(0,0,0,0.85)',
     justifyContent: 'flex-end',
   },
   modalContent: {
@@ -705,7 +969,7 @@ const styles = StyleSheet.create({
   },
   modalTicker: {
     color: '#F8FAFC',
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '900',
   },
   modalDate: {
@@ -795,6 +1059,66 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontWeight: '800',
     fontSize: 14,
+  },
+  inputLabel: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: '700',
+    marginBottom: 6,
+    marginTop: 10,
+  },
+  textInput: {
+    backgroundColor: '#0A0F1D',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    color: '#F8FAFC',
+    fontSize: 14,
+  },
+  dualInputRow: {
+    flexDirection: 'row',
+  },
+  formCategoryRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 6,
+  },
+  categoryChoice: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: '#0A0F1D',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    alignItems: 'center',
+  },
+  categoryChoiceActive: {
+    borderColor: '#10B981',
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+  },
+  categoryChoiceText: {
+    color: '#64748B',
+    fontWeight: '700',
+    fontSize: 12,
+  },
+  categoryChoiceTextActive: {
+    color: '#34D399',
+  },
+  saveTradeBtn: {
+    backgroundColor: '#10B981',
+    paddingVertical: 14,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginTop: 20,
+    marginBottom: 20,
+  },
+  saveTradeBtnText: {
+    color: '#05080E',
+    fontWeight: '900',
+    fontSize: 14,
+    letterSpacing: 1,
   },
   drawerOverlay: {
     flex: 1,
