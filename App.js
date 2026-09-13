@@ -25,9 +25,11 @@ function MainScreen() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [followedTrades, setFollowedTrades] = useState([]);
   const [positions, setPositions] = useState([]);
+  const [sentiments, setSentiments] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadingSentiments, setLoadingSentiments] = useState(true);
 
-  // Estados del Formulario de Alta
+  // Estados Formulario Trade
   const [isNewTradeOpen, setIsNewTradeOpen] = useState(false);
   const [formTab, setFormTab] = useState('CORTO');
   const [ticker, setTicker] = useState('');
@@ -37,13 +39,23 @@ function MainScreen() {
   const [tp2, setTp2] = useState('');
   const [tp3, setTp3] = useState('');
   const [tvUrl, setTvUrl] = useState('');
-  const [isSaving, setIsSaving] = useState(false);
+  const [isSavingTrade, setIsSavingTrade] = useState(false);
+
+  // Estados Formulario Sentimiento
+  const [isNewSentimentOpen, setIsNewSentimentOpen] = useState(false);
+  const [sentTag, setSentTag] = useState('');
+  const [sentTitle, setSentTitle] = useState('');
+  const [sentNote, setSentNote] = useState('');
+  const [sentChartUrl, setSentChartUrl] = useState('');
+  const [isSavingSentiment, setIsSavingSentiment] = useState(false);
 
   useEffect(() => {
     fetchTrades();
+    fetchSentiments();
 
-    const channel = supabase
-      .channel('schema-db-changes')
+    // Suscripción a cambios de trades en tiempo real
+    const tradesChannel = supabase
+      .channel('schema-trades-changes')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'trades' },
@@ -53,8 +65,21 @@ function MainScreen() {
       )
       .subscribe();
 
+    // Suscripción a cambios de sentimientos en tiempo real
+    const sentimentsChannel = supabase
+      .channel('schema-sentiments-changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'sentiments' },
+        () => {
+          fetchSentiments();
+        }
+      )
+      .subscribe();
+
     return () => {
-      supabase.removeChannel(channel);
+      supabase.removeChannel(tradesChannel);
+      supabase.removeChannel(sentimentsChannel);
     };
   }, []);
 
@@ -133,9 +158,28 @@ function MainScreen() {
     }
   };
 
+  const fetchSentiments = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('sentiments')
+        .select('*')
+        .order('id', { ascending: false });
+
+      if (error) {
+        console.error('Error al traer sentimientos:', error);
+      } else if (data) {
+        setSentiments(data);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingSentiments(false);
+    }
+  };
+
   const handleCreateTrade = async () => {
     if (!ticker.trim() || !entryPrice || !stopPrice || !tp1) {
-      Alert.alert('Datos requeridos', 'Completá Ticker, Entrada, Stop Loss y al menos el Target 1.');
+      Alert.alert('Datos requeridos', 'Completá Ticker, Entrada, Stop Loss y Target 1.');
       return;
     }
 
@@ -146,11 +190,11 @@ function MainScreen() {
     const t3 = tp3 ? parseFloat(tp3.replace(',', '.')) : null;
 
     if (isNaN(e) || isNaN(s) || isNaN(t1)) {
-      Alert.alert('Formato inválido', 'Los precios ingresados deben ser numéricos.');
+      Alert.alert('Formato inválido', 'Los precios deben ser numéricos.');
       return;
     }
 
-    setIsSaving(true);
+    setIsSavingTrade(true);
 
     const profits = [
       {
@@ -202,12 +246,10 @@ function MainScreen() {
     };
 
     const { error } = await supabase.from('trades').insert([newRecord]);
-
-    setIsSaving(false);
+    setIsSavingTrade(false);
 
     if (error) {
-      console.log('Error Supabase insert:', error);
-      Alert.alert('Error al guardar', error.message || JSON.stringify(error));
+      Alert.alert('Error al guardar', error.message);
     } else {
       Alert.alert('Éxito', '¡Posición publicada correctamente!');
       setTicker('');
@@ -222,11 +264,43 @@ function MainScreen() {
     }
   };
 
-  const sentimentFeed = [
-    { id: '1', tag: '#VIX', title: 'Sentimiento #VIX', date: 'Hoy 09:18', note: 'Volatilidad en compresión. Atentos a quiebre de soporte.' },
-    { id: '2', tag: '#BTCUSD', title: 'Sentimiento #BTCUSD', date: 'Hoy 08:45', note: 'Rebote intradiario en zona de liquidez previa.' },
-    { id: '3', tag: '#CCL', title: 'Sentimiento #DolarCable', date: 'Ayer 17:30', note: 'Flujo de cauciones BYMA impactando en la brecha cambiaria.' },
-  ];
+  const handleCreateSentiment = async () => {
+    if (!sentTag.trim() || !sentTitle.trim() || !sentNote.trim()) {
+      Alert.alert('Campos requeridos', 'Completá el Tag (ej: #CCL), el Título y la Nota.');
+      return;
+    }
+
+    setIsSavingSentiment(true);
+
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const dateLabel = `Hoy ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+
+    const cleanTag = sentTag.trim().startsWith('#') ? sentTag.trim() : `#${sentTag.trim()}`;
+
+    const newAlert = {
+      tag: cleanTag.toUpperCase(),
+      title: sentTitle.trim(),
+      date_label: dateLabel,
+      note: sentNote.trim(),
+      chart_url: sentChartUrl.trim() || null,
+    };
+
+    const { error } = await supabase.from('sentiments').insert([newAlert]);
+    setIsSavingSentiment(false);
+
+    if (error) {
+      Alert.alert('Error', error.message);
+    } else {
+      Alert.alert('Éxito', 'Alerta de sentimiento publicada.');
+      setSentTag('');
+      setSentTitle('');
+      setSentNote('');
+      setSentChartUrl('');
+      setIsNewSentimentOpen(false);
+      fetchSentiments();
+    }
+  };
 
   const toggleFollow = (id) => {
     if (followedTrades.includes(id)) {
@@ -261,6 +335,7 @@ function MainScreen() {
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <StatusBar barStyle="light-content" backgroundColor="#05080E" translucent={false} />
 
+      {/* Header institucional */}
       <View style={styles.header}>
         <TouchableOpacity style={styles.menuIconBtn} onPress={() => setIsMenuOpen(true)}>
           <Text style={styles.menuIconText}>☰</Text>
@@ -273,7 +348,15 @@ function MainScreen() {
             <Text style={[styles.headerTitle, { color: '#F8FAFC' }]}> INVESTING</Text>
           </View>
           <Text style={styles.headerSubtitle}>
-            {currentScreen === 'MIS_POSICIONES' ? 'MI CARTERA ACTIVA' : 'TERMINAL DE INVERSIÓN'}
+            {currentScreen === 'MIS_POSICIONES'
+              ? 'MI CARTERA ACTIVA'
+              : currentScreen === 'SENTIMIENTO'
+              ? 'FLASHES & SENTIMIENTO'
+              : currentScreen === 'OPINION'
+              ? 'MACRO & COBERTURA'
+              : currentScreen === 'ESTADISTICAS'
+              ? 'TRAZABILIDAD CUANTITATIVA'
+              : 'TERMINAL DE INVERSIÓN'}
           </Text>
         </View>
 
@@ -287,6 +370,7 @@ function MainScreen() {
         </TouchableOpacity>
       </View>
 
+      {/* Pantalla DESK o MIS POSICIONES */}
       {(currentScreen === 'DESK' || currentScreen === 'MIS_POSICIONES') && (
         <>
           <View style={styles.tabContainer}>
@@ -387,7 +471,6 @@ function MainScreen() {
             </ScrollView>
           )}
 
-          {/* Botón flotante para abrir el panel de carga rápida */}
           <TouchableOpacity
             style={styles.fabButton}
             activeOpacity={0.85}
@@ -398,23 +481,56 @@ function MainScreen() {
         </>
       )}
 
+      {/* Pantalla SENTIMIENTO / ALERTAS */}
       {currentScreen === 'SENTIMIENTO' && (
-        <ScrollView contentContainerStyle={styles.listContainer}>
-          {sentimentFeed.map((item) => (
-            <View key={item.id} style={styles.sentimentCard}>
-              <View style={styles.sentimentHeader}>
-                <Text style={styles.sentimentTitle}>{item.title}</Text>
-                <Text style={styles.sentimentDate}>{item.date}</Text>
-              </View>
-              <Text style={styles.sentimentNote}>{item.note}</Text>
-              <TouchableOpacity style={styles.sentimentBtn}>
-                <Text style={styles.sentimentBtnText}>VER ANÁLISIS EN VIVO</Text>
-              </TouchableOpacity>
+        <>
+          {loadingSentiments ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#10B981" />
+              <Text style={styles.loadingText}>Cargando flashes de mercado...</Text>
             </View>
-          ))}
-        </ScrollView>
+          ) : (
+            <ScrollView contentContainerStyle={styles.listContainer}>
+              {sentiments.map((item) => (
+                <View key={item.id} style={styles.sentimentCard}>
+                  <View style={styles.sentimentHeader}>
+                    <View style={styles.tagBadge}>
+                      <Text style={styles.tagBadgeText}>{item.tag}</Text>
+                    </View>
+                    <Text style={styles.sentimentDate}>{item.date_label}</Text>
+                  </View>
+                  <Text style={styles.sentimentTitle}>{item.title}</Text>
+                  <Text style={styles.sentimentNote}>{item.note}</Text>
+                  {item.chart_url ? (
+                    <TouchableOpacity
+                      style={styles.sentimentBtn}
+                      onPress={() => Linking.openURL(item.chart_url)}
+                    >
+                      <Text style={styles.sentimentBtnText}>📊 VER ANÁLISIS EN VIVO</Text>
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
+              ))}
+
+              {sentiments.length === 0 && (
+                <View style={styles.emptyContainer}>
+                  <Text style={styles.emptyText}>No hay alertas de sentimiento publicadas aún.</Text>
+                </View>
+              )}
+            </ScrollView>
+          )}
+
+          <TouchableOpacity
+            style={styles.fabButton}
+            activeOpacity={0.85}
+            onPress={() => setIsNewSentimentOpen(true)}
+          >
+            <Text style={styles.fabText}>+ NUEVA ALERTA</Text>
+          </TouchableOpacity>
+        </>
       )}
 
+      {/* Pantalla OPINION */}
       {currentScreen === 'OPINION' && (
         <ScrollView contentContainerStyle={styles.listContainer}>
           <View style={styles.opinionBox}>
@@ -427,6 +543,7 @@ function MainScreen() {
         </ScrollView>
       )}
 
+      {/* Pantalla ESTADISTICAS */}
       {currentScreen === 'ESTADISTICAS' && (
         <ScrollView contentContainerStyle={styles.listContainer}>
           <View style={styles.statsCard}>
@@ -556,14 +673,86 @@ function MainScreen() {
               />
 
               <TouchableOpacity
-                style={[styles.saveTradeBtn, isSaving && { opacity: 0.6 }]}
+                style={[styles.saveTradeBtn, isSavingTrade && { opacity: 0.6 }]}
                 onPress={handleCreateTrade}
-                disabled={isSaving}
+                disabled={isSavingTrade}
               >
-                {isSaving ? (
+                {isSavingTrade ? (
                   <ActivityIndicator color="#05080E" />
                 ) : (
                   <Text style={styles.saveTradeBtnText}>PUBLICAR POSICIÓN</Text>
+                )}
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal Formulario Nueva Alerta Sentimiento */}
+      <Modal
+        visible={isNewSentimentOpen}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setIsNewSentimentOpen(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { maxHeight: '85%' }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTicker}>Nueva Alerta Flash</Text>
+              <TouchableOpacity onPress={() => setIsNewSentimentOpen(false)} style={styles.closeButton}>
+                <Text style={styles.closeButtonText}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false}>
+              <Text style={styles.inputLabel}>TAG / IDENTIFICADOR (EJ: #CCL, #AL30, #VIX)</Text>
+              <TextInput
+                style={styles.textInput}
+                placeholder="#TICKER"
+                placeholderTextColor="#475569"
+                value={sentTag}
+                onChangeText={setSentTag}
+                autoCapitalize="characters"
+              />
+
+              <Text style={styles.inputLabel}>TÍTULO DE LA ALERTA</Text>
+              <TextInput
+                style={styles.textInput}
+                placeholder="Ej: Sentimiento #DolarCable"
+                placeholderTextColor="#475569"
+                value={sentTitle}
+                onChangeText={setSentTitle}
+              />
+
+              <Text style={styles.inputLabel}>ANÁLISIS TÉCNICO / NOTA</Text>
+              <TextInput
+                style={[styles.textInput, { height: 80, textAlignVertical: 'top' }]}
+                placeholder="Escribí el flash de mercado o quiebre técnico..."
+                placeholderTextColor="#475569"
+                value={sentNote}
+                onChangeText={setSentNote}
+                multiline={true}
+              />
+
+              <Text style={styles.inputLabel}>LINK A GRÁFICO (OPCIONAL)</Text>
+              <TextInput
+                style={styles.textInput}
+                placeholder="https://www.tradingview.com/..."
+                placeholderTextColor="#475569"
+                value={sentChartUrl}
+                onChangeText={setSentChartUrl}
+                autoCapitalize="none"
+              />
+
+              <TouchableOpacity
+                style={[styles.saveTradeBtn, isSavingSentiment && { opacity: 0.6 }]}
+                onPress={handleCreateSentiment}
+                disabled={isSavingSentiment}
+              >
+                {isSavingSentiment ? (
+                  <ActivityIndicator color="#05080E" />
+                ) : (
+                  <Text style={styles.saveTradeBtnText}>PUBLICAR ALERTA</Text>
                 )}
               </TouchableOpacity>
             </ScrollView>
@@ -1203,34 +1392,49 @@ const styles = StyleSheet.create({
   sentimentCard: {
     backgroundColor: '#0A0F1D',
     padding: 16,
-    borderRadius: 10,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: '#162235',
   },
   sentimentHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    alignItems: 'center',
     marginBottom: 8,
   },
-  sentimentTitle: {
+  tagBadge: {
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    borderColor: '#10B981',
+    borderWidth: 1,
+    paddingVertical: 2,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+  },
+  tagBadgeText: {
     color: '#34D399',
-    fontSize: 15,
+    fontWeight: '800',
+    fontSize: 12,
+  },
+  sentimentTitle: {
+    color: '#F8FAFC',
+    fontSize: 16,
     fontWeight: 'bold',
+    marginBottom: 6,
   },
   sentimentDate: {
     color: '#64748B',
-    fontSize: 12,
+    fontSize: 11,
   },
   sentimentNote: {
-    color: '#E2E8F0',
+    color: '#CBD5E1',
     fontSize: 13,
     lineHeight: 20,
     marginBottom: 12,
   },
   sentimentBtn: {
     alignSelf: 'flex-start',
-    backgroundColor: 'rgba(16, 185, 129, 0.1)',
-    paddingVertical: 6,
+    backgroundColor: 'rgba(16, 185, 129, 0.08)',
+    paddingVertical: 7,
     paddingHorizontal: 12,
     borderRadius: 6,
     borderWidth: 1,
