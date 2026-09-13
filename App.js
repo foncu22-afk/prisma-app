@@ -12,6 +12,7 @@ import {
   Dimensions,
   ActivityIndicator,
   Alert,
+  Vibration,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { supabase } from './supabase';
@@ -53,7 +54,7 @@ function MainScreen() {
     fetchTrades();
     fetchSentiments();
 
-    // Suscripción a cambios de trades en tiempo real
+    // Listener Realtime Trades
     const tradesChannel = supabase
       .channel('schema-trades-changes')
       .on(
@@ -65,13 +66,16 @@ function MainScreen() {
       )
       .subscribe();
 
-    // Suscripción a cambios de sentimientos en tiempo real
+    // Listener Realtime Sentiments con alerta táctil al insertar
     const sentimentsChannel = supabase
       .channel('schema-sentiments-changes')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'sentiments' },
-        () => {
+        (payload) => {
+          if (payload.eventType === 'INSERT') {
+            Vibration.vibrate([0, 350, 150, 350]);
+          }
           fetchSentiments();
         }
       )
@@ -275,7 +279,6 @@ function MainScreen() {
     const now = new Date();
     const pad = (n) => String(n).padStart(2, '0');
     const dateLabel = `Hoy ${pad(now.getHours())}:${pad(now.getMinutes())}`;
-
     const cleanTag = sentTag.trim().startsWith('#') ? sentTag.trim() : `#${sentTag.trim()}`;
 
     const newAlert = {
@@ -335,7 +338,6 @@ function MainScreen() {
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <StatusBar barStyle="light-content" backgroundColor="#05080E" translucent={false} />
 
-      {/* Header institucional */}
       <View style={styles.header}>
         <TouchableOpacity style={styles.menuIconBtn} onPress={() => setIsMenuOpen(true)}>
           <Text style={styles.menuIconText}>☰</Text>
@@ -370,7 +372,6 @@ function MainScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* Pantalla DESK o MIS POSICIONES */}
       {(currentScreen === 'DESK' || currentScreen === 'MIS_POSICIONES') && (
         <>
           <View style={styles.tabContainer}>
@@ -481,7 +482,6 @@ function MainScreen() {
         </>
       )}
 
-      {/* Pantalla SENTIMIENTO / ALERTAS */}
       {currentScreen === 'SENTIMIENTO' && (
         <>
           {loadingSentiments ? (
@@ -530,7 +530,6 @@ function MainScreen() {
         </>
       )}
 
-      {/* Pantalla OPINION */}
       {currentScreen === 'OPINION' && (
         <ScrollView contentContainerStyle={styles.listContainer}>
           <View style={styles.opinionBox}>
@@ -543,7 +542,6 @@ function MainScreen() {
         </ScrollView>
       )}
 
-      {/* Pantalla ESTADISTICAS */}
       {currentScreen === 'ESTADISTICAS' && (
         <ScrollView contentContainerStyle={styles.listContainer}>
           <View style={styles.statsCard}>
